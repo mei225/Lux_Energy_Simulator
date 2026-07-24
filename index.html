@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LUX - 원통형 자가발전 시뮬레이터</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Pretendard', 'sans-serif'],
+                    },
+                    colors: {
+                        lux: {
+                            green: '#10b981',
+                            blue: '#3b82f6',
+                            dark: '#0f172a',
+                            amber: '#f59e0b'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { 
+            font-family: 'Pretendard', sans-serif; 
+            margin: 0;
+            overflow: hidden; /* Prevent scrolling, act like an app */
+            background-color: #0f172a; /* Dark background for simulation */
+            color: white;
+        }
+        #webgl-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 1;
+        }
+        .ui-layer {
+            position: relative;
+            z-index: 10;
+            pointer-events: none; /* Let clicks pass through to 3D canvas where needed */
+        }
+        .interactive-panel {
+            pointer-events: auto; /* Re-enable clicks for UI elements */
+            backdrop-filter: blur(12px);
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        /* Custom Range Slider Styling */
+        input[type=range] {
+            -webkit-appearance: none;
+            width: 100%;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 20px;
+            width: 20px;
+            border-radius: 50%;
+            background: #ffffff;
+            cursor: pointer;
+            margin-top: -8px;
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+        }
+        input[type=range]:focus {
+            outline: none;
+        }
+        
+        /* Wind Particle Animation Effect CSS */
+        .wind-particle {
+            position: absolute;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, rgba(147, 197, 253, 0.8), transparent);
+            opacity: 0;
+            z-index: 5;
+            pointer-events: none;
+        }
+        @keyframes blow {
+            0% { transform: translateX(-100px); opacity: 0; }
+            20% { opacity: 1; }
+            80% { opacity: 1; }
+            100% { transform: translateX(calc(100vw + 100px)); opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <!-- 3D Scene Container -->
+    <div id="webgl-container"></div>
+    
+    <!-- Wind Particles Container (HTML Overlay) -->
+    <div id="wind-overlay" class="absolute inset-0 pointer-events-none overflow-hidden z-[5]"></div>
+
+    <!-- UI Layer -->
+    <div class="ui-layer flex flex-col justify-between h-screen p-4 sm:p-6 md:p-8">
+        
+        <!-- Header / Info -->
+        <div class="flex justify-between items-start">
+            <div class="interactive-panel rounded-2xl p-5 w-full max-w-sm">
+                <div class="flex items-center gap-3 mb-2">
+                    <div class="w-8 h-8 rounded bg-gradient-to-br from-lux-green to-lux-blue flex items-center justify-center text-white font-bold text-lg shadow-lg">
+                        L
+                    </div>
+                    <h1 class="font-bold text-xl tracking-tight text-white">LUX 발전 시뮬레이터</h1>
+                </div>
+                <p class="text-slate-300 text-sm mb-4 leading-relaxed">
+                    베르누이 효과를 이용한 하이브리드(태양광+풍력) 모듈형 원통형 자가발전 시스템의 작동 원리를 확인하세요.
+                </p>
+                <div class="text-xs text-slate-400 bg-slate-800/50 p-2 rounded flex items-center gap-2">
+                    <i class="fas fa-mouse-pointer"></i> <span>화면을 드래그하여 모델 회전 및 관찰</span>
+                </div>
+            </div>
+
+            <!-- Dashboard Data -->
+            <div class="interactive-panel rounded-2xl p-4 w-48 hidden sm:block text-right">
+                <div class="text-slate-400 text-xs font-semibold uppercase tracking-wider mb-1">현재 발전량</div>
+                <div class="flex items-end justify-end gap-1 mb-2">
+                    <span id="power-output" class="text-3xl font-bold text-white font-mono">0</span>
+                    <span class="text-slate-400 text-sm pb-1">W</span>
+                </div>
+                
+                <div class="w-full bg-slate-700/50 rounded-full h-2 mt-2 overflow-hidden">
+                    <div id="battery-level" class="bg-lux-green h-2 rounded-full transition-all duration-300" style="width: 10%"></div>
+                </div>
+                <div class="text-xs text-slate-400 mt-1 flex justify-between">
+                    <span>ESS 충전율</span>
+                    <span id="battery-text">10%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Mobile Dashboard (visible only on small screens) -->
+        <div class="interactive-panel rounded-xl p-3 mb-4 sm:hidden flex justify-between items-center">
+            <div>
+                <div class="text-slate-400 text-[10px] uppercase">발전량</div>
+                <div class="font-bold text-lg text-white font-mono"><span id="power-output-mobile">0</span>W</div>
+            </div>
+            <div class="w-32">
+                <div class="w-full bg-slate-700/50 rounded-full h-1.5 overflow-hidden">
+                    <div id="battery-level-mobile" class="bg-lux-green h-1.5 rounded-full transition-all duration-300" style="width: 10%"></div>
+                </div>
+                <div class="text-[10px] text-slate-400 mt-1 text-right"><span id="battery-text-mobile">10%</span></div>
+            </div>
+        </div>
+
+        <!-- Control Panel (Bottom) -->
+        <div class="interactive-panel rounded-3xl p-5 md:p-6 w-full max-w-2xl mx-auto flex flex-col md:flex-row gap-6 md:items-center shadow-2xl">
+            
+            <!-- Wind Control -->
+            <div class="flex-1 space-y-3">
+                <div class="flex justify-between items-center">
+                    <label class="font-semibold text-white flex items-center gap-2">
+                        <i class="fas fa-wind text-lux-blue"></i> 바람 세기 (풍력)
+                    </label>
+                    <span id="wind-speed-val" class="text-lux-blue font-mono font-bold">0 m/s</span>
+                </div>
+                <input type="range" id="wind-slider" min="0" max="15" step="0.5" value="0">
+                <div class="flex justify-between text-xs text-slate-400">
+                    <span>무풍</span>
+                    <span>도심풍</span>
+                    <span>돌풍</span>
+                </div>
+            </div>
+
+            <div class="hidden md:block w-px h-16 bg-slate-600/50"></div>
+
+            <!-- Sun Control -->
+            <div class="flex-1 flex flex-col justify-center">
+                <label class="font-semibold text-white flex items-center gap-2 mb-3">
+                    <i class="fas fa-sun text-amber-400"></i> 태양광 패널 상태
+                </label>
+                <div class="flex gap-2">
+                    <button id="sun-off-btn" class="flex-1 py-2 px-4 rounded-lg bg-slate-700 text-slate-300 hover:bg-slate-600 border border-transparent transition-all border-slate-500 font-medium">
+                        <i class="fas fa-moon mr-1"></i> 야간
+                    </button>
+                    <button id="sun-on-btn" class="flex-1 py-2 px-4 rounded-lg bg-slate-800 text-slate-400 hover:bg-slate-700 border border-transparent transition-all font-medium">
+                        <i class="fas fa-sun mr-1"></i> 주간
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Status Tooltips near model (managed via JS to follow screen position) -->
+    <div id="solar-tooltip" class="absolute pointer-events-none transition-opacity duration-300 opacity-0 z-20 flex items-center gap-2 bg-slate-900/80 backdrop-blur border border-slate-700 px-3 py-1.5 rounded-full text-xs font-medium text-white">
+        <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> 태양광 발전 중
+    </div>
+    <div id="turbine-tooltip" class="absolute pointer-events-none transition-opacity duration-300 opacity-0 z-20 flex flex-col bg-slate-900/80 backdrop-blur border border-slate-700 px-3 py-2 rounded-lg text-xs font-medium text-white shadow-lg">
+        <div class="flex items-center gap-2 mb-1">
+            <span class="w-2 h-2 rounded-full bg-lux-blue animate-pulse"></span> <span>다단 터빈 작동</span>
+        </div>
+        <div class="text-[10px] text-slate-400">베르누이 효과로 유속 증폭</div>
+    </div>
+
+
+    <!-- Load Three.js and OrbitControls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // State variables
+        let state = {
+            windSpeed: 0, // 0 to 15
+            isDaytime: false,
+            battery: 10,
+            generatedPower: 0
+        };
+
+        // UI Elements
+        const ui = {
+            windSlider: document.getElementById('wind-slider'),
+            windVal: document.getElementById('wind-speed-val'),
+            sunOffBtn: document.getElementById('sun-off-btn'),
+            sunOnBtn: document.getElementById('sun-on-btn'),
+            powerOut: document.getElementById('power-output'),
+            powerOutMob: document.getElementById('power-output-mobile'),
+            batLevel: document.getElementById('battery-level'),
+            batLevelMob: document.getElementById('battery-level-mobile'),
+            batText: document.getElementById('battery-text'),
+            batTextMob: document.getElementById('battery-text-mobile'),
+            windOverlay: document.getElementById('wind-overlay'),
+            solarTooltip: document.getElementById('solar-tooltip'),
+            turbineTooltip: document.getElementById('turbine-tooltip')
+        };
+
+        // DOM Elements for ThreeJS Objects mapping (for tooltips)
+        const objectPositions = {
+            solarTop: new THREE.Vector3(),
+            turbineCenter: new THREE.Vector3()
+        };
+
+        // Three.js Globals
+        let scene, camera, renderer, controls;
+        let generatorGroup;
+        let turbines = []; // array to hold turbine meshes
+        let solarPanelMaterial;
+        let sunLight;
+        const clock = new THREE.Clock(); // 클럭 객체를 이곳으로 이동
+
+        // Initialize Simulation
+        init3D();
+        setupEventListeners();
+        
+        function setupEventListeners() {
+            // Wind Slider
+            ui.windSlider.addEventListener('input', (e) => {
+                state.windSpeed = parseFloat(e.target.value);
+                ui.windVal.textContent = state.windSpeed + ' m/s';
+                updateSimulationState();
+                manageWindParticles();
+            });
+
+            // Sun Buttons
+            ui.sunOffBtn.addEventListener('click', () => setDaytime(false));
+            ui.sunOnBtn.addEventListener('click', () => setDaytime(true));
+        }
+
+        function setDaytime(isDay) {
+            state.isDaytime = isDay;
+            
+            // UI Toggle
+            if(isDay) {
+                ui.sunOnBtn.classList.replace('bg-slate-800', 'bg-amber-500/20');
+                ui.sunOnBtn.classList.replace('text-slate-400', 'text-amber-400');
+                ui.sunOnBtn.classList.replace('border-transparent', 'border-amber-500');
+                
+                ui.sunOffBtn.classList.replace('bg-slate-600', 'bg-slate-800');
+                ui.sunOffBtn.classList.replace('border-slate-500', 'border-transparent');
+                ui.sunOffBtn.classList.replace('text-slate-300', 'text-slate-400');
+            } else {
+                ui.sunOffBtn.classList.replace('bg-slate-800', 'bg-slate-700');
+                ui.sunOffBtn.classList.replace('border-transparent', 'border-slate-500');
+                ui.sunOffBtn.classList.replace('text-slate-400', 'text-slate-300');
+
+                ui.sunOnBtn.classList.replace('bg-amber-500/20', 'bg-slate-800');
+                ui.sunOnBtn.classList.replace('border-amber-500', 'border-transparent');
+                ui.sunOnBtn.classList.replace('text-amber-400', 'text-slate-400');
+            }
+
+            // Update 3D Environment
+            if (sunLight) {
+                sunLight.intensity = isDay ? 1.5 : 0.1;
+                scene.background = isDay ? new THREE.Color(0x1e293b) : new THREE.Color(0x0f172a);
+            }
+            if (solarPanelMaterial) {
+                // Brighten panel if active
+                solarPanelMaterial.emissive.setHex(isDay ? 0x1e3a8a : 0x000000);
+            }
+
+            updateSimulationState();
+        }
+
+        function updateSimulationState() {
+            // Calculate Power (Fake logic for demonstration)
+            // Wind power increases exponentially, Solar is constant if on
+            let windPower = Math.pow(state.windSpeed, 1.5) * 5; 
+            let solarPower = state.isDaytime ? 150 : 0;
+            
+            state.generatedPower = Math.floor(windPower + solarPower);
+            
+            // Update UI Numbers
+            ui.powerOut.textContent = state.generatedPower;
+            ui.powerOutMob.textContent = state.generatedPower;
+
+            // Manage Tooltips visibility based on activity
+            if (state.isDaytime) {
+                ui.solarTooltip.classList.remove('opacity-0');
+            } else {
+                ui.solarTooltip.classList.add('opacity-0');
+            }
+
+            if (state.windSpeed > 0) {
+                ui.turbineTooltip.classList.remove('opacity-0');
+            } else {
+                ui.turbineTooltip.classList.add('opacity-0');
+            }
+        }
+
+        // Battery Charging Simulation Loop
+        setInterval(() => {
+            if (state.generatedPower > 0) {
+                state.battery += (state.generatedPower / 1000); // Slow charge
+                if(state.battery > 100) state.battery = 100;
+                
+                const rounded = Math.floor(state.battery);
+                const widthStr = `${rounded}%`;
+                
+                ui.batLevel.style.width = widthStr;
+                ui.batLevelMob.style.width = widthStr;
+                ui.batText.textContent = widthStr;
+                ui.batTextMob.textContent = widthStr;
+            }
+        }, 1000);
+
+
+        // Visual HTML CSS Wind Particles
+        let windInterval;
+        function manageWindParticles() {
+            clearInterval(windInterval);
+            ui.windOverlay.innerHTML = ''; // clear existing
+            
+            if (state.windSpeed > 0) {
+                // Density and speed based on wind setting
+                const intervalTime = 1000 / state.windSpeed;
+                const duration = Math.max(1, 4 - (state.windSpeed * 0.15));
+
+                windInterval = setInterval(() => {
+                    createWindParticle(duration);
+                }, intervalTime);
+            }
+        }
+
+        function createWindParticle(duration) {
+            const particle = document.createElement('div');
+            particle.className = 'wind-particle';
+            
+            // Randomize vertical position, keeping mostly in middle where turbines are
+            const top = 30 + Math.random() * 40; 
+            const length = 50 + Math.random() * 150;
+            
+            particle.style.top = `${top}%`;
+            particle.style.width = `${length}px`;
+            particle.style.animation = `blow ${duration}s linear forwards`;
+            
+            ui.windOverlay.appendChild(particle);
+            
+            // Remove after animation
+            setTimeout(() => {
+                if(particle.parentNode) particle.parentNode.removeChild(particle);
+            }, duration * 1000);
+        }
+
+
+        function init3D() {
+            const container = document.getElementById('webgl-container');
+            
+            // Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x0f172a); // Match HTML background
+            scene.fog = new THREE.FogExp2(0x0f172a, 0.015);
+
+            // Camera Setup
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(20, 10, 25);
+
+            // Renderer Setup
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // optimize performance
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            container.appendChild(renderer.domElement);
+
+            // Controls
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.maxDistance = 50;
+            controls.minDistance = 10;
+            controls.maxPolarAngle = Math.PI / 2 + 0.1; // Don't go too far below ground
+
+            // Lighting Setup
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+            scene.add(ambientLight);
+
+            // The 'Sun' light
+            sunLight = new THREE.DirectionalLight(0xfff7ed, 0.1); // Starts off (night)
+            sunLight.position.set(10, 30, 10);
+            sunLight.castShadow = true;
+            sunLight.shadow.mapSize.width = 1024;
+            sunLight.shadow.mapSize.height = 1024;
+            scene.add(sunLight);
+
+            // Blueish rim light for tech aesthetic
+            const fillLight = new THREE.DirectionalLight(0x3b82f6, 0.5);
+            fillLight.position.set(-15, 5, -15);
+            scene.add(fillLight);
+
+            // Ground Plane
+            const groundGeo = new THREE.PlaneGeometry(100, 100);
+            const groundMat = new THREE.MeshStandardMaterial({ 
+                color: 0x0f172a,
+                roughness: 0.8,
+                metalness: 0.2
+            });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -6; // Place below model
+            ground.receiveShadow = true;
+            
+            // Grid helper for tech feel
+            const grid = new THREE.GridHelper(100, 40, 0x334155, 0x1e293b);
+            grid.position.y = -5.99;
+            scene.add(ground);
+            scene.add(grid);
+
+            // Build Model
+            buildGeneratorModel();
+
+            // Handle Window Resize
+            window.addEventListener('resize', onWindowResize, false);
+            
+            // Setup Tooltip Positions initial calculation
+            updateTooltipPositions();
+
+            // Start animation loop
+            animate();
+        }
+
+        function buildGeneratorModel() {
+            generatorGroup = new THREE.Group();
+
+            // Materials
+            const glassMaterial = new THREE.MeshPhysicalMaterial({
+                color: 0xeef2ff,
+                metalness: 0.2,
+                roughness: 0.1,
+                transmission: 0.7,
+                transparent: true,
+                opacity: 0.8,
+                side: THREE.DoubleSide
+            });
+
+            const metalMaterial = new THREE.MeshStandardMaterial({
+                color: 0x94a3b8,
+                metalness: 0.7,
+                roughness: 0.3
+            });
+
+            const turbineMaterial = new THREE.MeshStandardMaterial({
+                color: 0x3b82f6, 
+                metalness: 0.4,
+                roughness: 0.2,
+                emissive: 0x1d4ed8,
+                emissiveIntensity: 0.2 // slight glow
+            });
+
+            // Need global ref to change emissive on day/night
+            solarPanelMaterial = new THREE.MeshStandardMaterial({
+                color: 0x1e3a8a, 
+                metalness: 0.6,
+                roughness: 0.2,
+                emissive: 0x000000 
+            });
+
+            const bodyHeight = 15;
+            const bodyRadius = 3;
+            
+            // 1. Outer Cylinder Shell (Glass-like to see inside)
+            const outerShell = new THREE.Mesh(
+                new THREE.CylinderGeometry(bodyRadius, bodyRadius, bodyHeight, 32, 1, true),
+                glassMaterial
+            );
+            outerShell.castShadow = true;
+            generatorGroup.add(outerShell);
+
+            // Metal structure lines
+            const topRim = new THREE.Mesh(new THREE.TorusGeometry(bodyRadius, 0.15, 16, 64), metalMaterial);
+            topRim.rotation.x = Math.PI / 2;
+            topRim.position.y = bodyHeight/2;
+            generatorGroup.add(topRim);
+
+            const bottomRim = new THREE.Mesh(new THREE.TorusGeometry(bodyRadius, 0.15, 16, 64), metalMaterial);
+            bottomRim.rotation.x = Math.PI / 2;
+            bottomRim.position.y = -bodyHeight/2;
+            generatorGroup.add(bottomRim);
+
+            // 2. Internal Multi-stage Turbines
+            const numStages = 3;
+            const stageHeight = bodyHeight / numStages;
+
+            for (let i = 0; i < numStages; i++) {
+                // Local Y center for this stage relative to group center
+                const stageY = (i * stageHeight) - (bodyHeight/2) + (stageHeight/2);
+
+                // Bernoulli Funnels (Top and Bottom narrowing)
+                const funnelGeo = new THREE.CylinderGeometry(bodyRadius, bodyRadius * 0.4, stageHeight * 0.35, 32, 1, true);
+                
+                const topFunnel = new THREE.Mesh(funnelGeo, glassMaterial);
+                topFunnel.position.y = stageY + (stageHeight * 0.2);
+                generatorGroup.add(topFunnel);
+
+                const bottomFunnel = new THREE.Mesh(funnelGeo, glassMaterial);
+                bottomFunnel.rotation.x = Math.PI; // flip
+                bottomFunnel.position.y = stageY - (stageHeight * 0.2);
+                generatorGroup.add(bottomFunnel);
+
+                // Orange joint ring
+                const ring = new THREE.Mesh(
+                    new THREE.TorusGeometry(bodyRadius * 0.4, 0.1, 16, 32), 
+                    new THREE.MeshStandardMaterial({color: 0xf59e0b})
+                );
+                ring.rotation.x = Math.PI/2;
+                ring.position.y = stageY + 0.6;
+                generatorGroup.add(ring);
+
+                // Turbine Rotor Assembly
+                const rotorGroup = new THREE.Group();
+                rotorGroup.position.y = stageY;
+
+                // Shaft
+                const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, stageHeight * 0.6, 16), metalMaterial);
+                rotorGroup.add(shaft);
+
+                // Blades (Savonius type shape approximation)
+                const numBlades = 3;
+                for(let j=0; j<numBlades; j++) {
+                    // Curved blade using partial cylinder
+                    const bladeGeo = new THREE.CylinderGeometry(bodyRadius * 0.7, bodyRadius * 0.7, stageHeight * 0.4, 16, 1, false, 0, Math.PI / 2);
+                    const blade = new THREE.Mesh(bladeGeo, turbineMaterial);
+                    
+                    // Offset center of rotation
+                    blade.position.x = (bodyRadius * 0.35) * Math.cos(j * (Math.PI * 2 / numBlades));
+                    blade.position.z = (bodyRadius * 0.35) * Math.sin(j * (Math.PI * 2 / numBlades));
+                    blade.rotation.y = -j * (Math.PI * 2 / numBlades);
+                    
+                    rotorGroup.add(blade);
+                }
+
+                turbines.push(rotorGroup); // Store for animation
+                generatorGroup.add(rotorGroup);
+            }
+
+            // Central Axis Line
+            const centralAxis = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, bodyHeight, 16), metalMaterial);
+            generatorGroup.add(centralAxis);
+
+            // 3. Top Solar Panel Assembly
+            const topGroup = new THREE.Group();
+            topGroup.position.y = (bodyHeight/2) + 1;
+
+            // Mount
+            topGroup.add(new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 2, 16), metalMaterial));
+
+            // Panel Box
+            const panel = new THREE.Mesh(new THREE.BoxGeometry(8, 0.2, 8), [
+                metalMaterial, metalMaterial, solarPanelMaterial, // top is solar
+                metalMaterial, metalMaterial, metalMaterial
+            ]);
+            panel.position.y = 1;
+            panel.rotation.x = Math.PI / 8; // Tilt slightly south
+            topGroup.add(panel);
+
+            generatorGroup.add(topGroup);
+            
+            // Base Stand (ESS)
+            const baseGeo = new THREE.CylinderGeometry(bodyRadius + 0.5, bodyRadius + 0.5, 2, 32);
+            const baseMat = new THREE.MeshStandardMaterial({color: 0x334155, metalness: 0.8});
+            const baseMesh = new THREE.Mesh(baseGeo, baseMat);
+            baseMesh.position.y = -(bodyHeight/2) - 1;
+            baseMesh.castShadow = true;
+            baseMesh.receiveShadow = true;
+            generatorGroup.add(baseMesh);
+
+            // Adjust overall position
+            generatorGroup.position.y = 2; // lift up from ground
+            scene.add(generatorGroup);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function updateTooltipPositions() {
+            if(!generatorGroup) return;
+
+            // Target positions in 3D space
+            // Solar is top
+            objectPositions.solarTop.set(0, generatorGroup.position.y + 9, 0);
+            // Turbine is middle
+            objectPositions.turbineCenter.set(4, generatorGroup.position.y, 0);
+
+            // Project to 2D Screen space
+            const tempV = new THREE.Vector3();
+            
+            // Solar Tooltip
+            tempV.copy(objectPositions.solarTop).project(camera);
+            let x = (tempV.x *  .5 + .5) * window.innerWidth;
+            let y = (tempV.y * -.5 + .5) * window.innerHeight;
+            ui.solarTooltip.style.left = `${x}px`;
+            ui.solarTooltip.style.top = `${y}px`;
+            ui.solarTooltip.style.transform = `translate(-50%, -100%) translateY(-10px)`;
+
+            // Turbine Tooltip
+            tempV.copy(objectPositions.turbineCenter).project(camera);
+            x = (tempV.x *  .5 + .5) * window.innerWidth;
+            y = (tempV.y * -.5 + .5) * window.innerHeight;
+            ui.turbineTooltip.style.left = `${x}px`;
+            ui.turbineTooltip.style.top = `${y}px`;
+            ui.turbineTooltip.style.transform = `translate(10px, -50%)`;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const delta = clock.getDelta();
+
+            // Turbine Rotation Logic
+            if (state.windSpeed > 0) {
+                // Calculate rotation speed based on wind speed
+                // Add minor multiplier per stage to simulate Bernoulli amplification effect visually
+                turbines.forEach((turbine, index) => {
+                    const amplification = 1 + (index * 0.15); // Higher turbines spin slightly faster
+                    const rotSpeed = state.windSpeed * amplification * 1.5; 
+                    
+                    // Rotate on Y axis
+                    turbine.rotation.y -= (rotSpeed * delta);
+                });
+            } else {
+                // Slow down to stop (friction)
+                turbines.forEach(turbine => {
+                    // Simple damping if it has residual rotation
+                    // To keep it simple, just stop it if wind is 0. 
+                    // In a complex sim we'd track velocity.
+                });
+            }
+
+            // Update HTML tooltips to follow 3D objects
+            updateTooltipPositions();
+
+            // Update camera controls
+            controls.update();
+
+            // Render scene
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
